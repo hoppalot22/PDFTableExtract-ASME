@@ -126,8 +126,15 @@ class ASMETable:
             self.TableNumByPage[pageNumber] = self.TableNumByPage[lastValidPage]        
         self.subTableIndiciesByPage[pageNumber] = headerIndex
         
+        if headerIndex == 0:        
+            lineNums = (table["Line No."].astype(int) + self.pageTableData[lastValidPage]["Line No."].astype(int).max()) if lastValidPage is not None else table["Line No."].astype(int)
+        else:
+            lineNums = self.pageTableData[lastValidPage]["Line No."].astype(int)
+
+
         try:
-            table["Line No."] = (table["Line No."].astype(int) + self.pageTableData[lastValidPage]["Line No."].astype(int).max()*(headerIndex == 0)) if lastValidPage is not None else table["Line No."].astype(int)
+            table["Line No."] = lineNums
+            print(table)
             self.pageTableData[pageNumber] = table
             headings = self.data.columns.tolist() + [e for e in table.columns if (e not in self.data.columns)and(e != "Line No.")]
 
@@ -402,6 +409,7 @@ def Main():
                             table.AddPage(pageTable, pageNum, debug=True)
                             size, peak = tracemalloc.get_traced_memory()
                             print(f"size = {size/1024} Kib, peak = {peak/1024} Kib")
+                            print(table.data)
                             if prevPeak != 0 and (peak - prevPeak)/prevPeak > 1:
                                 print(f"Warning, large increase in memory useage on page {pageNum+1}")
                                 log.write(f"Warning, large increase in memory useage on page {pageNum+1}")
