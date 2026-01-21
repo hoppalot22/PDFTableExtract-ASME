@@ -4,6 +4,8 @@ import fitz
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import traceback
+import tracemalloc
 
 class ASMETable:
 
@@ -22,6 +24,15 @@ class ASMETable:
         "2B": [["Line No.", "Nominal Composition", "Product Form", "Spec. No.", "Type/Grade", "Alloy Desig./UNS No.", "Class/Condition/Temper", "Size/Thickness (mm)", "P-No."],
                ["Line No.", "Min. Tensile Strength (MPa)", "Min. Yield Strength (MPa)", "III", "VIII-2", "External Pressure Chart No.", "Notes"],
                ["Line No.", "40", "65", "100", "125", "150", "175", "200", "225", "250", "275", "300", "325", "350", "375", "400", "425"]],
+        "Sy": [["Line No.", "Nominal Composition", "Product Form", "Spec. No.", "Type/Grade", "Alloy Desig./UNS No.", "Class/Condition/Temper"],
+               ["Line No.", "Size/Thickness (mm)", "Min. Tensile Strength (MPa)", "Min. Yield Strength (MPa)", "Notes"],
+               ["Line No.", "40", "65", "100", "125", "150", "175", "200", "225", "250", "275"],
+               ["Line No.", "300", "325", "350", "375", "400", "425", "450", "475", "500", "525"],
+               ["Line No.", "550", "575", "600", "625", "650", "675", "700", "725", "750", "775", "800", "825", "850", "875", "900"]],
+        "Su": [["Line No.", "Nominal Composition", "Product Form", "Spec. No.", "Type/Grade", ],
+               ["Line No.", "Alloy Desig./UNS No.", "Class/Condition/Temper", "Size/Thickness (mm)", "Min. Tensile Strength (MPa)"],
+               ["Line No.", "40", "100", "150", "200", "250", "300", "325", "350", "375", "400", "425", "450", "475", "500", "525"],
+               ["Line No.", "550", "575", "600", "625", "650", "675", "700", "725", "750", "775", "800", "825", "850", "875", "900"]],
     }
 
 
@@ -48,7 +59,7 @@ class ASMETable:
         pageText = page.get_text("text").replace("…", "...")
         
         if any(x not in pageText[0:int(len(pageText)*0.1)] for x in ["Table", self.tableID]):
-            #print(f"Table {self.tableID} not found on page")
+            print(f"Table {self.tableID} not found on page")
             return None
         
         #print(f"{self.tableID} found at position {pageText.index(self.tableID)}")
@@ -59,17 +70,17 @@ class ASMETable:
             for header in headerRows:
                 headerWords.extend(header.replace("/", " ").replace("(", "").replace(")", "").split(" "))
             for word in headerWords:
-                if word not in pageText[0:int(len(pageText)*0.25)]:
+                if word not in pageText[0:int(len(pageText))]:
                     headersFound.append(0)
                     break
             else:
                 headersFound.append(1)
 
         if sum(headersFound) == 0:
-            #print(f"Table {self.tableID} headers not found")
+            print(f"Table {self.tableID} headers not found")
             return None
         elif sum(headersFound) > 1:
-            #print(f"Warning Multiple possible headers found for Table {self.tableID}")
+            print(f"Warning Multiple possible headers found for Table {self.tableID}")
             return None
         elif sum(headersFound) == 1:
             if debug:
@@ -87,13 +98,13 @@ class ASMETable:
 
     def AddPage(self, page, pageNumber: int = None, debug = False):
 
-        headerIndex = self.ValidatePageText(page)
+        headerIndex = self.ValidatePageText(page.page)
         if headerIndex is None:
             return
         else:
             header = self.IDtoHeaderMap[self.tableID][headerIndex]
 
-        pageTable = PageTable(page)
+        pageTable = page
         table = pageTable.GenerateTable(header)
 
         if table.columns.tolist() != header:
@@ -115,11 +126,17 @@ class ASMETable:
             self.TableNumByPage[pageNumber] = self.TableNumByPage[lastValidPage]        
         self.subTableIndiciesByPage[pageNumber] = headerIndex
         
-        table["Line No."] = (self.pageTableData[lastValidPage]["Line No."] + table["Line No."].astype(int).max()*(headerIndex == 0)) if lastValidPage is not None else table["Line No."].astype(int)     
+        try:
+            table["Line No."] = (table["Line No."].astype(int) + self.pageTableData[lastValidPage]["Line No."].astype(int).max()*(headerIndex == 0)) if lastValidPage is not None else table["Line No."].astype(int)
+            self.pageTableData[pageNumber] = table
+            headings = self.data.columns.tolist() + [e for e in table.columns if (e not in self.data.columns)and(e != "Line No.")]
 
-        self.pageTableData[pageNumber] = table
-        headings = self.data.columns.tolist() + [e for e in table.columns if (e not in self.data.columns)and(e != "Line No.")]
-        self.data = self.data.combine_first(table.set_index("Line No."))[headings]
+            self.data = self.data.combine_first(table.set_index("Line No."))[headings]
+        except Exception as e:
+            print(e)
+            print(table)
+            traceback.print_exc()
+            pageTable.show_image()
 
 
 class PageTable:
@@ -211,47 +228,62 @@ class PageTable:
 
     def GenerateTableBounds(self, header):       
 
-        minGap = 3
+        minGap = 4
         offsetX = 0
         offsetY = 1
 
         _, headerY1, centers = self.FindTableHeader(header)  
-        data = self.MostCommonPositions()
-
-        x = data[["x0", "x0_count"]]
-        y = data[["y1", "y1_count"]][data["y1"] > headerY1]
 
         bboxData = self.GetBbox()
 
         #Restrict to only data below header and above the lowest word (Page number)
 
-        bboxData = bboxData[(bboxData["y1"] > headerY1)&(bboxData["y1"] < bboxData["y1"].max()-5)]
+        bboxData = bboxData[(bboxData["y1"] > headerY1)&(bboxData["y1"] < bboxData["y1"].max()-5) & (~bboxData["word"].isin(["Ferrous", "Nonferrous", "Materials", "(Cont'd)", "ð25Þ"]))]
 
-        colXs = x.sort_values("x0_count", ascending=False)["x0"]
-        rowYs = y.sort_values("y1_count", ascending=False)["y1"]
-
-        validXs = []
-        cutoff = 400
-
-        for i, center in enumerate(centers):
-            offSetCount = 1
-            prevCenter = centers[i-1] if i > 0 else center - 15
-            newPos = prevCenter
-            while (not((newPos <= centers[i]) and (newPos >= (prevCenter))) or (bboxData["word"][newPos > bboxData["x0"]][newPos < bboxData["x1"]+minGap].count()!=0)) and (offSetCount < cutoff):
-                offSetCount += 1
-                newPos = prevCenter + offSetCount
-                if offSetCount >= cutoff:
-                    print(f"Could not find valid column position near center {center}, header {header[i]}")
-                    raise Exception("Column position detection failed")
-
-            validXs.append(newPos)
-
-        colXs = [int(e) + offsetX for e in validXs] + [int(bboxData["x1"].max())+offsetX]
-        colXs.sort()
-        numRows = bboxData["word"][bboxData["y1"] > headerY1][bboxData["x0"] >= colXs[0]-1-offsetX][bboxData["x1"] <= colXs[1]].count()
-        rowYs = [headerY1] + [e + offsetY for e in rowYs.head(numRows).tolist()]
+        # Find x and y regions that do not intersect with any words
         
-        return colXs, rowYs
+        xs = np.arange(bboxData["x0"].min()-3, max(max(centers), bboxData["x1"].max())+15).astype(int)
+        x0 = bboxData["x0"].to_numpy()
+        x1 = (bboxData["x1"]+minGap).to_numpy()
+
+        invalid_maskX = (
+            (xs[:, None] > x0[None, :]) &
+            (xs[:, None] < x1[None, :])
+        ).any(axis=1)
+
+        validX = xs[~invalid_maskX]
+        firstColX0 = validX[validX<centers[0]].max()
+        firstColX1 = validX[validX>centers[0]].min()
+        firstCol = bboxData[(bboxData["x0"] >= firstColX0) & (bboxData["x1"] <= firstColX1)]
+        assert type(firstCol) == pd.DataFrame
+        validX = validX[validX>=firstColX0]
+
+        ys = np.arange(firstCol["y0"].min()-3, firstCol["y1"].max()+15).astype(int)
+        y0 = firstCol["y0"].to_numpy()
+        y1 = firstCol["y1"].to_numpy()
+
+        invalid_maskY = (
+            (ys[:, None] > y0[None, :]) &
+            (ys[:, None] < y1[None, :])
+        ).any(axis=1)
+
+        validY = ys[~invalid_maskY]
+
+        assert type(validX) == type(xs)
+
+        #Descretise Regions
+        xBounds = validX[[True, *(np.diff(np.diff(validX))!=0), True]]
+        yBounds = validY[[True, *(np.diff(np.diff(validY))!=0), True]]
+        
+        if xBounds.shape[0]%2 == 1:
+            xBounds = np.append(xBounds[0]-3, xBounds)
+        if yBounds.shape[0]%2 == 1:
+            yBounds = np.append(yBounds[0]-3, yBounds)
+
+        meanInnerX = (xBounds[::2] + xBounds[1::2])/2
+        meanInnerY = (yBounds[::2] + yBounds[1::2])/2
+        
+        return meanInnerX, meanInnerY
     
     def GenerateTable(self, header):
         self.headers = header
@@ -289,6 +321,7 @@ class PageTable:
                 print(rowData)
                 self.show_image()
                 raise e
+
 
         self.df = tableData
         return tableData
@@ -331,6 +364,9 @@ class PageTable:
 
 def Main():
 
+    tracemalloc.start()
+    prevSize, prevPeak = 0, 0
+
     CURR_DIR = __file__[:-len(os.path.basename(__file__))]
     print(CURR_DIR)
     try:
@@ -338,31 +374,44 @@ def Main():
     except:
         raise Exception("Script requires a pdf argument")
 
-    searchStartPage = 55
-    searchEndPage = 500
+    searchStartPage = 600
+    searchEndPage = 867
     tables = {
         "1A" : ASMETable("1A"),
         "2A" : ASMETable("1B"),
         "1B" : ASMETable("2A"),
         "2B" : ASMETable("2B"),
+        "Su" : ASMETable("Su"),
+        "Sy" : ASMETable("Sy")
               }
 
 
     with fitz.open(draggedFile) as doc:
 
-        skippedPages = []    
+        skippedPages = []
 
-        for pageNum in range(searchStartPage-1, searchEndPage):
-            print(f"Processing page {pageNum+1}")
-            page = doc[pageNum]
-            for table in tables.values():
-                if table.ValidatePageText(page, debug=True) is not None:
-                    print(f"page {pageNum+1} is a valid {table.tableID} candidate")
-                    try:
-                        table.AddPage(page, pageNum, debug=True)
-                    except Exception as e:
-                        print(f"Error adding page {pageNum+1} to Table {table.tableID}: {e}, page has been skipped")
-                        skippedPages.append((pageNum+1, table.tableID))
+        with open(CURR_DIR + "/log.txt", "w") as log:
+            for pageNum in range(searchStartPage-1, searchEndPage):
+                print(f"Processing page {pageNum+1}")
+                page = doc[pageNum]
+                for table in tables.values():
+                    if table.ValidatePageText(page, debug=True) is not None:
+                        print(f"page {pageNum+1} is a valid {table.tableID} candidate")
+                        try:
+                            pageTable = PageTable(page)
+                            table.AddPage(pageTable, pageNum, debug=True)
+                            size, peak = tracemalloc.get_traced_memory()
+                            print(f"size = {size/1024} Kib, peak = {peak/1024} Kib")
+                            if prevPeak != 0 and (peak - prevPeak)/prevPeak > 1:
+                                print(f"Warning, large increase in memory useage on page {pageNum+1}")
+                                log.write(f"Warning, large increase in memory useage on page {pageNum+1}")
+                            
+                            tracemalloc.reset_peak()
+                            prevSize, prevPeak = size, peak
+                        except Exception as e:
+                            print(f"Error adding page {pageNum+1} to Table {table.tableID}: {e}, page has been skipped")
+                            traceback.print_exc(file = log)
+                        
 
     for table in tables.values():    
         #print(table)
